@@ -1,12 +1,14 @@
-# Import the converted model's class
+import math
 import os
 
 print 'from'
 from posenet import GoogLeNet as PoseNet
 from tensorflow.python.training import training_util
+from tqdm import tqdm
 
 print 'tensorflow'
 import tensorflow as tf
+import numpy as np
 
 print 'from local'
 from data import get_data, gen_data_batch
@@ -16,9 +18,11 @@ print 'global'
 batch_size = 48
 max_iterations = 30000
 save_interval = 1000
+validation_interval = 1000
 # Set this path to your data_file data_dir
 data_dir = '/home/user/Datasets/camera_relocalization/KingsCollege'
 train_data_file = 'dataset_train.txt'
+test_data_file = 'dataset_train.txt'
 model_path = '/home/user/Datasets/tensorflow/models/mobilenet/mobilenet_v1_1.0_224_2017_06_14/mobilenet_v1_1.0_224.ckpt'
 restore_global_step = False
 debug = False
@@ -39,6 +43,8 @@ def main():
   print 'get_data'
   train_data_path = os.path.join(data_dir, train_data_file)
   train_data_source = get_data(train_data_path, data_dir)
+  test_data_path = os.path.join(data_dir, test_data_file)
+  test_data_source = get_data(test_data_path, data_dir)
 
   print 'build_posenet'
   net = build_posenet(images, 'mobilenet')
@@ -61,6 +67,9 @@ def main():
   gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.6833)
 
   init = tf.global_variables_initializer()
+  p3_x = net['cls3_fc_pose_xyz']
+  p3_q = net['cls3_fc_pose_wpqr']
+
   variables_to_restore = tf.trainable_variables()
   if restore_global_step:
     variables_to_restore.append(global_step)
@@ -74,6 +83,7 @@ def main():
   if checkpoint is None:
     checkpoint = model_path
   output_file = 'PoseNet.ckpt'
+  results = np.zeros((len(test_data_source.images), 2))
 
   with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
     # Load the data
@@ -92,6 +102,7 @@ def main():
     print('Model restored from file: %s' % checkpoint)
 
     train_data_batch_generator = gen_data_batch(train_data_source, batch_size)
+    test_data_batch_generator = gen_data_batch(test_data_source, batch_size)
     for i in range(max_iterations):
       np_images, np_poses_x, np_poses_q = next(train_data_batch_generator)
       feed = {images: np_images, poses_x: np_poses_x, poses_q: np_poses_q}
@@ -99,12 +110,39 @@ def main():
       sess.run(opt, feed_dict=feed)
       np_loss = sess.run(loss, feed_dict=feed)
       if i % 20 == 0:
-        print('iteration: ' + str(i) + '\n\t' + 'Loss is: ' + str(np_loss))
+        print('Iteration: ' + str(i) + '\n\t' + 'Loss is: ' + str(np_loss))
       if i > 0 and i % save_interval == 0:
         saver.save(sess, output_file, global_step=global_step)
         print('Intermediate file saved at: ' + output_file)
+      if i > 0 and i % validation_interval == 0:
+        print 'Validating'
+        for j in tqdm(range(len(test_data_source.images))):
+          np_image, np_poses_x, np_poses_q = next(test_data_batch_generator)
+          feed = {images: np_image}
+
+          pose_q = np.asarray(test_data_source.poses[j][3:7])
+          pose_x = np.asarray(test_data_source.poses[j][0:3])
+          predicted_x, predicted_q = sess.run([p3_x, p3_q], feed_dict=feed)
+
+          pose_q = np.squeeze(pose_q)
+          pose_x = np.squeeze(pose_x)
+          predicted_q = np.squeeze(predicted_q)
+          predicted_x = np.squeeze(predicted_x)
+
+          #Compute Individual Sample Error
+          q1 = pose_q / np.linalg.norm(pose_q)
+          q2 = predicted_q / np.linalg.norm(predicted_q)
+          d = abs(np.sum(np.multiply(q1, q2)))
+          theta = 2 * np.arccos(d) * 180 / math.pi
+          error_x = np.linalg.norm(pose_x - predicted_x)
+          results[j, :] = [error_x, theta]
+          print 'Validation iter:  ', j, '  Error XYZ (m):  ', error_x, '  Error Q (degrees):  ', theta
+
     saver.save(sess, output_file)
     print('Intermediate file saved at: ' + output_file)
+    median_result = np.median(results, axis=0)
+    print 'Median error ', median_result[0], 'm  and ', median_result[
+        1], 'degrees.'
 
 
 if __name__ == '__main__':

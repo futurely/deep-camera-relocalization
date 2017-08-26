@@ -1,20 +1,13 @@
-# Import the converted model's class
+import math
 import os
 
 import numpy as np
-import random
 import tensorflow as tf
-from tensorflow.python.ops import rnn, rnn_cell
-from posenet import GoogLeNet as PoseNet
-import cv2
-from tqdm import tqdm
-import math
 
 from data import get_data, gen_data_batch
 from net_builder import build_posenet
 
 batch_size = 1
-max_iterations = 30000
 
 # Set this path to your project directory
 path = 'path_to_project/'

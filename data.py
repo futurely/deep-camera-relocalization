@@ -76,7 +76,6 @@ def get_data(data_path, image_dir):
       p6 = float(p6)
       poses.append((p0, p1, p2, p3, p4, p5, p6))
       images.append(os.path.join(image_dir, fname))
-      break
   images = preprocess(images)
   return datasource(images, poses)
 
