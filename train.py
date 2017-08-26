@@ -1,16 +1,30 @@
 # Import the converted model's class
-import numpy as np
-import random
-import tensorflow as tf
+import os
+
+print 'from'
 from posenet import GoogLeNet as PoseNet
-import cv2
+from tensorflow.python.training import training_util
 from tqdm import tqdm
 
-batch_size = 75
+print 'import'
+import cv2
+import numpy as np
+import random
+print 'tensorflow'
+import tensorflow as tf
+
+print 'from local'
+from net_builder import build_posenet
+
+print 'global'
+batch_size = 48
 max_iterations = 30000
-# Set this path to your dataset directory
-directory = 'path_to_datasets/KingsCollege/'
-dataset = 'dataset_train.txt'
+# Set this path to your data_file data_dir
+data_dir = '/home/user/Datasets/camera_relocalization/KingsCollege'
+data_file = 'dataset_train.txt'
+model_path = '/home/user/Datasets/tensorflow/models/mobilenet/mobilenet_v1_1.0_224_2017_06_14/mobilenet_v1_1.0_224.ckpt'
+restore_global_step = False
+debug = False
 
 
 class datasource(object):
@@ -39,7 +53,9 @@ def preprocess(images):
   #Resize and crop and compute mean!
   images_cropped = []
   for i in tqdm(range(len(images))):
+    print 'images[i]', i, images[i]
     X = cv2.imread(images[i])
+    print 'image size', X.shape
     X = cv2.resize(X, (455, 256))
     X = centeredCrop(X, 224)
     images_cropped.append(X)
@@ -66,7 +82,8 @@ def get_data():
   poses = []
   images = []
 
-  with open(directory + dataset) as f:
+  data_path = os.path.join(data_dir, data_file)
+  with open(data_path) as f:
     next(f)  # skip the 3 header lines
     next(f)
     next(f)
@@ -80,7 +97,9 @@ def get_data():
       p5 = float(p5)
       p6 = float(p6)
       poses.append((p0, p1, p2, p3, p4, p5, p6))
-      images.append(directory + fname)
+      images.append(os.path.join(data_dir, fname))
+      if debug and len(images) >= batch_size:
+        break
   images = preprocess(images)
   return datasource(images, poses)
 
@@ -110,48 +129,101 @@ def gen_data_batch(source):
     yield np.array(image_batch), np.array(pose_x_batch), np.array(pose_q_batch)
 
 
+def should_load(name):
+  if name.startswith('cls') and name.find('_fc_pose_') != -1:
+    return False
+  if name.find('Logits') != -1 or name.find('Predictions') != -1:
+    return False
+  return True
+
+
 def main():
   images = tf.placeholder(tf.float32, [batch_size, 224, 224, 3])
   poses_x = tf.placeholder(tf.float32, [batch_size, 3])
   poses_q = tf.placeholder(tf.float32, [batch_size, 4])
+  print 'get_data'
   datasource = get_data()
 
-  net = PoseNet({'data': images})
+  print 'build_posenet'
+  net = build_posenet(images, 'mobilenet')
+  #  net = PoseNet({'data': images})
 
-  p1_x = net.layers['cls1_fc_pose_xyz']
-  p1_q = net.layers['cls1_fc_pose_wpqr']
-  p2_x = net.layers['cls2_fc_pose_xyz']
-  p2_q = net.layers['cls2_fc_pose_wpqr']
-  p3_x = net.layers['cls3_fc_pose_xyz']
-  p3_q = net.layers['cls3_fc_pose_wpqr']
+  loss = None
+  try:
+    p1_x = net['cls1_fc_pose_xyz']
+    p1_q = net['cls1_fc_pose_wpqr']
+    l1_x = tf.sqrt(tf.reduce_sum(tf.square(tf.subtract(p1_x, poses_x)))) * 0.3
+    l1_q = tf.sqrt(tf.reduce_sum(tf.square(tf.subtract(p1_q, poses_q)))) * 150
+    if loss is None:
+      loss = l1_x + l1_q
+    else:
+      loss += l1_x + l1_q
+  except:
+    pass
 
-  l1_x = tf.sqrt(tf.reduce_sum(tf.square(tf.subtract(p1_x, poses_x)))) * 0.3
-  l1_q = tf.sqrt(tf.reduce_sum(tf.square(tf.subtract(p1_q, poses_q)))) * 150
-  l2_x = tf.sqrt(tf.reduce_sum(tf.square(tf.subtract(p2_x, poses_x)))) * 0.3
-  l2_q = tf.sqrt(tf.reduce_sum(tf.square(tf.subtract(p2_q, poses_q)))) * 150
-  l3_x = tf.sqrt(tf.reduce_sum(tf.square(tf.subtract(p3_x, poses_x)))) * 1
-  l3_q = tf.sqrt(tf.reduce_sum(tf.square(tf.subtract(p3_q, poses_q)))) * 500
+  try:
+    p2_x = net['cls2_fc_pose_xyz']
+    p2_q = net['cls2_fc_pose_wpqr']
+    l2_x = tf.sqrt(tf.reduce_sum(tf.square(tf.subtract(p2_x, poses_x)))) * 0.3
+    l2_q = tf.sqrt(tf.reduce_sum(tf.square(tf.subtract(p2_q, poses_q)))) * 150
+    if loss is None:
+      loss = l2_x + l2_q
+    else:
+      loss += l2_x + l2_q
+  except:
+    pass
 
-  loss = l1_x + l1_q + l2_x + l2_q + l3_x + l3_q
+  try:
+    p3_x = net['cls3_fc_pose_xyz']
+    p3_q = net['cls3_fc_pose_wpqr']
+    l3_x = tf.sqrt(tf.reduce_sum(tf.square(tf.subtract(p3_x, poses_x)))) * 0.3
+    l3_q = tf.sqrt(tf.reduce_sum(tf.square(tf.subtract(p3_q, poses_q)))) * 150
+    if loss is None:
+      loss = l3_x + l3_q
+    else:
+      loss += l3_x + l3_q
+  except:
+    pass
+
+  print 'loss', loss
+
+  global_step = training_util.create_global_step()
   opt = tf.train.AdamOptimizer(
       learning_rate=0.0001,
       beta1=0.9,
       beta2=0.999,
       epsilon=0.00000001,
       use_locking=False,
-      name='Adam').minimize(loss)
+      name='Adam').minimize(
+          loss, global_step=global_step)
 
   # Set GPU options
   gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.6833)
 
   init = tf.global_variables_initializer()
-  saver = tf.train.Saver()
-  outputFile = "PoseNet.ckpt"
+  variables_to_restore = tf.trainable_variables()
+  if restore_global_step:
+    variables_to_restore.append(global_step)
+  print 'variables_to_restore', variables_to_restore
+  #  variables_to_restore.append()
+  saver = tf.train.Saver(variables_to_restore)
+  output_file = 'PoseNet.ckpt'
 
   with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
     # Load the data
     sess.run(init)
-    net.load('posenet.npy', sess)
+    # Restore model weights from previously saved model
+    try:
+      saver.restore(sess, model_path)
+    except:
+      variables_to_restore = [
+          x for x in tf.trainable_variables() if should_load(x.name)
+      ]
+      if restore_global_step:
+        variables_to_restore.append(global_step)
+      saver = tf.train.Saver(variables_to_restore)
+      saver.restore(sess, model_path)
+    print('Model restored from file: %s' % model_path)
 
     data_gen = gen_data_batch(datasource)
     for i in range(max_iterations):
@@ -161,12 +233,12 @@ def main():
       sess.run(opt, feed_dict=feed)
       np_loss = sess.run(loss, feed_dict=feed)
       if i % 20 == 0:
-        print("iteration: " + str(i) + "\n\t" + "Loss is: " + str(np_loss))
-      if i % 5000 == 0:
-        saver.save(sess, outputFile)
-        print("Intermediate file saved at: " + outputFile)
-    saver.save(sess, outputFile)
-    print("Intermediate file saved at: " + outputFile)
+        print('iteration: ' + str(i) + '\n\t' + 'Loss is: ' + str(np_loss))
+      if i > 0 and i % 1000 == 0:
+        saver.save(sess, output_file, global_step=global_step)
+        print('Intermediate file saved at: ' + output_file)
+    saver.save(sess, output_file)
+    print('Intermediate file saved at: ' + output_file)
 
 
 if __name__ == '__main__':
