@@ -1,13 +1,17 @@
-print '  fromt'
 from slim.nets import mobilenet_v1 as mobilenet
-print '  import'
+from tensorflow.contrib.layers import xavier_initializer
 import tensorflow as tf
 
 
 def add_predictions(net, end_points):
-  pose_xyz = tf.layers.dense(net, 3, name='cls3_fc_pose_xyz')
+  pose_xyz = tf.layers.dense(
+      net, 3, name='cls3_fc_pose_xyz', kernel_initializer=xavier_initializer())
   end_points['cls3_fc_pose_xyz'] = pose_xyz
-  pose_wpqr = tf.layers.dense(net, 4, name='cls3_fc_pose_wpqr')
+  pose_wpqr = tf.layers.dense(
+      net,
+      4,
+      name='cls3_fc_pose_wpqr',
+      kernel_initializer=xavier_initializer())
   end_points['cls3_fc_pose_wpqr'] = pose_wpqr
 
 
